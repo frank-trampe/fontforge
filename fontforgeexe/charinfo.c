@@ -361,6 +361,7 @@ static void CI_AskCounters(CharInfo *ci,HintMask *old) {
 	GHVBoxSetExpandableRow(boxes[0].ret,1);
 	GHVBoxSetExpandableCol(boxes[2].ret,gb_expandgluesame);
 	GHVBoxFitWindow(boxes[0].ret);
+	GTextInfoListFree(hgcd[0].gd.u.list);
 
 	PI_ShowHints(hi.sc,hgcd[0].ret,true);
 
@@ -369,19 +370,23 @@ static void CI_AskCounters(CharInfo *ci,HintMask *old) {
 	GDrawProcessOneEvent(NULL);
     GDrawDestroyWindow(hi.gw);
 
-    if ( !hi.ok )
+    if ( !hi.ok ) {
+	if ( old==NULL ) chunkfree(cur,sizeof(HintMask));
 return;		/* Cancelled */
-    else if ( old==NULL && hi.empty )
+    } else if ( old==NULL && hi.empty ) {
+	if ( old==NULL ) chunkfree(cur,sizeof(HintMask));
 return;		/* Didn't add anything new */
-    else if ( old==NULL ) {
+    } else if ( old==NULL ) {
 	GListAddStr(list,CounterMaskLine(hi.sc,cur),cur);
 return;
     } else if ( !hi.empty ) {
 	GListReplaceStr(list,GGadgetGetFirstListSelectedItem(list),
 		CounterMaskLine(hi.sc,cur),cur);
 return;
-    } else
+    } else {
 	GListDelSelected(list);
+	chunkfree(cur,sizeof(HintMask));
+    }
 }
 
 static int CI_NewCounter(GGadget *g, GEvent *e) {
@@ -426,6 +431,10 @@ static int CI_DeleteCounter(GGadget *g, GEvent *e) {
 		++j;
 	    }
 	new_[j] = (GTextInfo *) calloc(1,sizeof(GTextInfo));
+	if ( offset==600 ) {
+	    for ( i=0; i<len; ++i ) if ( old[i]->selected )
+		chunkfree(old[i]->userdata,sizeof(HintMask));
+	}
 	GGadgetSetList(list,new_,false);
 	GGadgetSetEnabled(GWidgetGetControl(GGadgetGetWindow(g),CID_Delete+offset),false);
 	GGadgetSetEnabled(GWidgetGetControl(GGadgetGetWindow(g),CID_Edit+offset),false);
@@ -477,6 +486,7 @@ static void SetNameFromUnicode(GWindow gw,int cid,int val) {
 
     temp = utf82u_copy(StdGlyphName(buf,val,ci->sc->parent->uni_interp,ci->sc->parent->for_new_glyphs));
     GGadgetSetTitle(GWidgetGetControl(gw,cid),temp);
+    free(temp);
 }
 
 void SCInsertPST(SplineChar *sc,PST *new_) {
@@ -528,6 +538,8 @@ static void CI_ParseCounters(CharInfo *ci) {
     GTextInfo **ti = GGadgetGetList(GWidgetGetControl(ci->gw,CID_List+600),&len);
     SplineChar *sc = ci->cachedsc;
 
+    free(sc->countermasks);
+
     sc->countermask_cnt = len;
     if ( len==0 )
 	sc->countermasks = NULL;
@@ -535,6 +547,7 @@ static void CI_ParseCounters(CharInfo *ci) {
 	sc->countermasks = malloc(len*sizeof(HintMask));
 	for ( i=0; i<len; ++i ) {
 	    memcpy(sc->countermasks[i],ti[i]->userdata,sizeof(HintMask));
+	    chunkfree(ti[i]->userdata,sizeof(HintMask));
 	    ti[i]->userdata = NULL;
 	}
     }
@@ -577,12 +590,16 @@ DeviceTable *DeviceTableParse(DeviceTable *dv,char *dvstr) {
 
     DeviceTableOK(dvstr,&low,&high);
     if ( low==-1 ) {
-	if ( dv!=NULL )
+	if ( dv!=NULL ) {
+	    free(dv->corrections);
 	    memset(dv,0,sizeof(*dv));
+	}
 return( dv );
     }
     if ( dv==NULL )
-	dv = XZALLOC(DeviceTable);
+	dv = chunkalloc(sizeof(DeviceTable));
+    else
+	free(dv->corrections);
     dv->first_pixel_size = low;
     dv->last_pixel_size = high;
     dv->corrections = calloc(high-low+1,1);
@@ -620,8 +637,10 @@ void VRDevTabParse(struct vr *vr,struct matrix_data *md) {
     if ( any && adjust==&temp ) {
 	vr->adjust = XZALLOC(ValDevTab);
 	*vr->adjust = temp;
-    } else if ( !any && vr->adjust!=NULL )
+    } else if ( !any && vr->adjust!=NULL ) {
+	ValDevFree(vr->adjust);
 	vr->adjust = NULL;
+    }
 }
 
 void DevTabToString(char **str,DeviceTable *adjust) {
@@ -755,6 +774,7 @@ void KpMDParse(SplineChar *sc,struct lookup_subtable *sub,
 		    sc->kerns = kp;
 		}
 	    }
+	    DeviceTableFree(kp->adjust);
 	    kp->adjust = DeviceTableParse(NULL,dvstr);
 	    kp->off = offset;
 	    kp->kcid = true;
@@ -916,7 +936,8 @@ return( false );
 		pst->subtable = (void *) possub[cols*i+0].u.md_ival;
 		pst->next = sc->possub;
 		sc->possub = pst;
-	    }
+	    } else
+		free( pst->u.subs.variant );
 	    pst->ticked = true;
 	    pst->u.subs.variant = GlyphNameListDeUnicode( possub[cols*i+1].u.md_str );
 	    if ( pstt==pst_ligature )
@@ -965,6 +986,7 @@ return( false );
 	    else
 		pstprev->next = pstnext;
 	    pst->next = NULL;
+	    PSTFree(pst);
 	}
     }
     for ( isv=0; isv<2; ++isv ) {
@@ -980,6 +1002,7 @@ return( false );
 		else
 		    sc->kerns = kpnext;
 		kp->next = NULL;
+		KernPairsFree(kp);
 	    }
 	}
     }
@@ -1025,14 +1048,27 @@ static struct glyphvariants *CI_ParseVariants(struct glyphvariants *gv,
     int rows, cols = GMatrixEditGetColCnt(construct);
     struct matrix_data *stuff = GMatrixEditGet(construct,&rows);
 
-    if ( (variants==NULL || variants[0]=='\0' || only_parts) && rows==0 )
+    if ( (variants==NULL || variants[0]=='\0' || only_parts) && rows==0 ) {
+	free(variants);
+	GlyphVariantsFree(gv);
 return( NULL );
+    }
     if ( gv==NULL )
+<<<<<<< HEAD
 	gv = XZALLOC(struct glyphvariants);
     if ( !only_parts && variants!=NULL && *variants!='\0' )
+=======
+	gv = chunkalloc(sizeof(struct glyphvariants));
+    free(gv->variants);
+    if ( only_parts )
+	free(variants);
+    else if ( variants!=NULL && *variants!='\0' )
+>>>>>>> parent of e05e525... Use BDW garbage collector
 	gv->variants = variants;
-    else
+    else {
 	gv->variants = NULL;
+	free( variants);
+    }
     if ( !only_parts ) {
 	gv->italic_correction = italic_correction;
 	gv->italic_adjusts = DeviceTableParse(gv->italic_adjusts,italic_correction_devtab);
@@ -1114,7 +1150,7 @@ static void CI_ParseAltUnis(CharInfo *ci) {
 	    FVSetTitle((FontViewBase *) fvs);
 	}
     }
-    sc->altuni = NULL;
+    AltUniFree(sc->altuni); sc->altuni = NULL;
     for ( i=0; i<rows; ++i ) {
 	int uni = stuff[i*cols+0].u.md_ival, vs = stuff[i*cols+1].u.md_ival;
 	altuni = XZALLOC(struct altuni);
@@ -1279,7 +1315,7 @@ return( false );
 		    ci->changes = baduniscl;
 		}
 		baduni->unicodeenc = oldsc->unicodeenc;
-		baduni->name = copy(oldsc->name);
+		free(baduni->name); baduni->name = copy(oldsc->name);
 	    } else {
 		if ( baduni!=NULL ) {
 		    if ( ff_ask(_("Multiple"),(const char **) buts,0,1,_("There is already a glyph with this encoding,\nwhich must be unique within a font,\ndo you want to swap the encodings of the two?"))==1 )
@@ -1303,7 +1339,7 @@ return( false );
 			badnamescl->next = ci->changes;
 			ci->changes = badnamescl;
 		    }
-		    badname->name = copy(oldsc->name);
+		    free(badname->name); badname->name = copy(oldsc->name);
 		}
 	    }
 	}
@@ -1312,6 +1348,7 @@ return( false );
 	ci->name_change = true;
     if ( !sameuni )
 	ci->uni_change = true;
+    free( newsc->name ); free( newsc->comment );
     newsc->name = copy( name );
     newsc->unicodeenc = unienc;
     newsc->comment = copy( comment );
@@ -1386,6 +1423,9 @@ return( false );
     if ( !DeviceTableOK(italicdevtab,&low,&high) || !DeviceTableOK(accentdevtab,&low,&high) ||
 	    !DeviceTableOK(hicdt,&low,&high) || !DeviceTableOK(vicdt,&low,&high)) {
 	ff_post_error( _("Bad Device Table Adjustment"),_("A device table adjustment specified for the MATH table is invalid") );
+	free( accentdevtab );
+	free( italicdevtab );
+	free(hicdt); free(vicdt);
 return( false );
     }
     if ( ci->cachedsc==NULL ) {
@@ -1399,15 +1439,26 @@ return( false );
 	ci->changes = scl;
     }
     /* CI_ProcessPosSubs is the first thing which might change anything real */
-    if ( !CI_ProcessPosSubs(ci))
+    if ( !CI_ProcessPosSubs(ci)) {
+	free( accentdevtab );
+	free( italicdevtab );
+	free(hicdt); free(vicdt);
 return( false );
+    }
     name = u2utf8_copy( nm );
     comment = GGadgetGetTitle8(GWidgetGetControl(ci->gw,CID_Comment));
-    if ( comment!=NULL && *comment=='\0' )
+    if ( comment!=NULL && *comment=='\0' ) {
+	free(comment);
 	comment=NULL;
+    }
     ret = CI_CheckMetaData(ci,oldsc,name,val,comment);
-    if ( !ret )
+    free(name); free(comment);
+    if ( !ret ) {
+	free( accentdevtab );
+	free( italicdevtab );
+	free(hicdt); free(vicdt);
 return( false );
+    }
     ci->cachedsc->unlink_rm_ovrlp_save_undo = GGadgetIsChecked(GWidgetGetControl(ci->gw,CID_UnlinkRmOverlap));
     ci->cachedsc->glyph_class = GGadgetGetFirstListSelectedItem(GWidgetGetControl(ci->gw,CID_GClass));
     val = GGadgetGetFirstListSelectedItem(GWidgetGetControl(ci->gw,CID_Color));
@@ -1423,6 +1474,10 @@ return( false );
     ci->cachedsc->top_accent_adjusts = DeviceTableParse(ci->cachedsc->top_accent_adjusts,accentdevtab);
     ci->cachedsc->horiz_variants = CI_ParseVariants(ci->cachedsc->horiz_variants,ci,1,hicdt,hic,false);
     ci->cachedsc->vert_variants  = CI_ParseVariants(ci->cachedsc->vert_variants ,ci,0,vicdt,vic,false);
+
+    free( accentdevtab );
+    free( italicdevtab );
+    free(hicdt); free(vicdt);
 
     CI_ParseAltUnis(ci);
 
@@ -1440,6 +1495,7 @@ return( false );
 	    else
 		prev->next = pst->next;
 	    pst->next = NULL;
+	    PSTFree(pst);
 	} else {
 	    if ( pst==NULL ) {
 		pst = XZALLOC(PST);
@@ -1477,7 +1533,7 @@ static void CI_ApplyAll(CharInfo *ci) {
 	if ( sc->name==NULL || strcmp( sc->name,cached->name )!=0 ) {
 	    if ( sc->name!=NULL )
 		SFGlyphRenameFixup(sf,sc->name,cached->name,false);
-	    sc->name = copy(cached->name);
+	    free(sc->name); sc->name = copy(cached->name);
 	    sc->namechanged = true;
 	    GlyphHashFree(sf);
 	}
@@ -1502,12 +1558,13 @@ static void CI_ApplyAll(CharInfo *ci) {
 		alt->unienc = sc->unicodeenc;
 	    sc->unicodeenc = cached->unicodeenc;
 	}
-	sc->comment = copy(cached->comment);
+	free(sc->comment); sc->comment = copy(cached->comment);
 	sc->unlink_rm_ovrlp_save_undo = cached->unlink_rm_ovrlp_save_undo;
 	sc->glyph_class = cached->glyph_class;
 	if ( sc->color != cached->color )
 	    refresh_fvdi = true;
 	sc->color = cached->color;
+	free(sc->countermasks);
 	sc->countermask_cnt = cached->countermask_cnt;
 	sc->countermasks = cached->countermasks;
 	cached->countermasks = NULL; cached->countermask_cnt = 0;
@@ -1516,17 +1573,24 @@ static void CI_ApplyAll(CharInfo *ci) {
 	sc->italic_correction = cached->italic_correction;
 	sc->top_accent_horiz = cached->top_accent_horiz;
 	sc->is_extended_shape = cached->is_extended_shape;
+	DeviceTableFree(sc->italic_adjusts);
+	DeviceTableFree(sc->top_accent_adjusts);
 	sc->italic_adjusts = cached->italic_adjusts;
 	sc->top_accent_adjusts = cached->top_accent_adjusts;
 	cached->italic_adjusts = cached->top_accent_adjusts = NULL;
+	GlyphVariantsFree(sc->horiz_variants);
+	GlyphVariantsFree(sc->vert_variants);
 	sc->horiz_variants = cached->horiz_variants;
 	sc->vert_variants = cached->vert_variants;
 	cached->horiz_variants = cached->vert_variants = NULL;
+	AltUniFree(sc->altuni);
 	sc->altuni = cached->altuni;
 	cached->altuni = NULL;
 	sc->lig_caret_cnt_fixed = cached->lig_caret_cnt_fixed;
+	PSTFree(sc->possub);
 	sc->possub = cached->possub;
 	cached->possub = NULL;
+	KernPairsFree(sc->kerns); KernPairsFree(sc->vkerns);
 	sc->kerns = cached->kerns; sc->vkerns = cached->vkerns;
 	cached->kerns = cached->vkerns = NULL;
 	sc->tile_margin = cached->tile_margin;
@@ -1565,6 +1629,7 @@ static void CI_Finish(CharInfo *ci) {
     for ( scl=ci->changes; scl!=NULL; scl=next ) {
 	next = scl->next;
 	SplineCharFree(scl->sc);
+	chunkfree(scl,sizeof(*scl));
     }
     GDrawDestroyWindow(ci->gw);
 }
@@ -1651,7 +1716,8 @@ static char *LigDefaultStr(int uni, char *name, int alt_lig ) {
 		;	/* These are good */
 	    else
 		alt = NULL;
-	} /* found 'A' means there is a library, now cleanup */
+	} else
+	    free(tmp); /* found 'A' means there is a library, now cleanup */
     }
     if ( alt==NULL ) {
 	if ( name==NULL || alt_lig )
@@ -1729,7 +1795,7 @@ char *AdobeLigatureFormat(char *name) {
 	components = malloc(1); *components = '\0';
 	while ( *pt ) {
 	    if ( sscanf(pt,"%4x", (unsigned *) &uni )==0 ) {
-		components = NULL;
+		free(components); components = NULL;
 	break;
 	    }
 	    next = StdGlyphName(buffer,uni,ui_none,(NameList *)-1);
@@ -1888,6 +1954,7 @@ return;
 	    else
 		prev_carets->next = carets->next;
 	    carets->next = NULL;
+	    PSTFree(carets);
 	}
 return;
     }
@@ -1902,9 +1969,13 @@ return;
 	carets->u.lcaret.cnt = lig_comp_max;
 return;
     }
-    carets->u.lcaret.carets = (int16 *) realloc(carets->u.lcaret.carets,lig_comp_max*sizeof(int16));
-    for ( i=carets->u.lcaret.cnt; i<lig_comp_max; ++i )
-      carets->u.lcaret.carets[i] = 0;
+    if ( carets->u.lcaret.carets==NULL )
+	carets->u.lcaret.carets = (int16 *) calloc(lig_comp_max,sizeof(int16));
+    else {
+	carets->u.lcaret.carets = (int16 *) realloc(carets->u.lcaret.carets,lig_comp_max*sizeof(int16));
+	for ( i=carets->u.lcaret.cnt; i<lig_comp_max; ++i )
+	    carets->u.lcaret.carets[i] = 0;
+    }
     carets->u.lcaret.cnt = lig_comp_max;
 }
 
@@ -1916,6 +1987,7 @@ static int CI_SName(GGadget *g, GEvent *e) {	/* Set From Name */
 	char buf[40], *ctemp; unichar_t ubuf[2], *temp;
 	ctemp = u2utf8_copy(ret);
 	i = UniFromName(ctemp,ui_none,&custom);
+	free(ctemp);
 	if ( i==-1 ) {
 	    /* Adobe says names like uni00410042 represent a ligature (A&B) */
 	    /*  (that is "uni" followed by two (or more) 4-digit codes). */
@@ -1933,6 +2005,7 @@ static int CI_SName(GGadget *g, GEvent *e) {	/* Set From Name */
 	sprintf(buf,"U+%04x", i);
 	temp = uc_copy(i==-1?"-1":buf);
 	GGadgetSetTitle(GWidgetGetControl(ci->gw,CID_UValue),temp);
+	free(temp);
 
 	ubuf[0] = i;
 	if ( i==-1 || i>0xffff )
@@ -1984,8 +2057,11 @@ return;		/* Didn't change */
 
 	for ( cnt=0; names[cnt]!=NULL; ++cnt );
 	list = malloc((cnt+1)*sizeof(GTextInfo*)); 
-	for ( cnt=0; names[cnt]!=NULL; ++cnt )
+	for ( cnt=0; names[cnt]!=NULL; ++cnt ) {
 	    list[cnt] = TIFromName(names[cnt]);
+	    free(names[cnt]);
+	}
+	free(names);
 	list[cnt] = TIFromName(NULL);
 	GGadgetSetList(g,list,true);
     }
@@ -2031,6 +2107,7 @@ return( true );
 	sprintf(buf,"U+%04x", val);
 	temp = uc_copy(buf);
 	GGadgetSetTitle(GWidgetGetControl(ci->gw,CID_UValue),temp);
+	free(temp);
     }
 return( true );
 }
@@ -2104,6 +2181,8 @@ static void DevTabMatrixInit(struct matrixinit *mi,char *dvstr) {
     mi->popupmenu = NULL;
     mi->handle_key = NULL;
     mi->bigedittitle = NULL;
+
+    free( devtab.corrections );
 }
 
 static int DevTabDlg_OK(GGadget *g, GEvent *e) {
@@ -2252,6 +2331,8 @@ char *DevTab_Dlg(GGadget *g, int r, int c) {
 
     GGadgetsCreate(gw,boxes+1);
 
+    free( mi.matrix_data );
+
     dvd.gme = gcd[0].ret;
     GMatrixEditSetNewText(gcd[0].ret,S_("PixelSize|New"));
     GHVBoxSetExpandableRow(boxes[1].ret,1);
@@ -2266,6 +2347,7 @@ char *DevTab_Dlg(GGadget *g, int r, int c) {
     if ( dvd.done==2 ) {
 	char *ret;
 	DevTabToString(&ret,&dvd.devtab);
+	free(dvd.devtab.corrections);
 return( ret );
     } else
 return( copy(dvstr));
@@ -2471,6 +2553,7 @@ return;
 			possub[r*col_cnt+1].u.md_str = components;
 return;
 		    }
+		    free( components );
 		}
 	    }
 	}
@@ -2507,6 +2590,7 @@ return;
 	possub[r*cols+0].u.md_ival = (intpt) sub;
 	ti = SFSubtableListOfType(ci->sc->parent, pst2lookuptype[sel+1], false, false);
 	GMatrixEditSetColumnChoices(g,0,ti);
+	GTextInfoListFree(ti);
 	if ( wasnew && ci->cv!=NULL )
 	    SCSubtableDefaultSubsCheck(ci->sc,sub, possub, cols, r, CVLayer((CharViewBase *) (ci->cv)));
     } else if ( ci->old_sub!=NULL ) {
@@ -2699,6 +2783,10 @@ static int CI_HideUnusedSingle(GGadget *g, GEvent *e) {
 return( true );
 }
 
+static void CI_FreeKernedImage(const void *_ci, GImage *img) {
+    GImageDestroy(img);
+}
+
 static const int kern_popup_size = 100;
 
 static BDFChar *Rasterize(SplineChar *sc,int def_layer) {
@@ -2823,6 +2911,8 @@ return( NULL );
 	     COLOR_RED(bg) + (l*(COLOR_RED(fg)-COLOR_RED(bg)))/((1<<clut_scale)-1),
 	     COLOR_GREEN(bg) + (l*(COLOR_GREEN(fg)-COLOR_GREEN(bg)))/((1<<clut_scale)-1),
 	     COLOR_BLUE(bg) + (l*(COLOR_BLUE(fg)-COLOR_BLUE(bg)))/((1<<clut_scale)-1) );
+    BDFCharFree(me);
+    BDFCharFree(other);
 return( img );
 }
 
@@ -2846,8 +2936,10 @@ GImage *SC_GetLinedImage(SplineChar *sc, int def_layer, int pos, int is_italic_c
     if ( pos<-100 || pos>100 )
 return( NULL );
     me = Rasterize(sc,def_layer);
-    if ( pos<me->xmin-10 || pos>me->xmax+30 )
+    if ( pos<me->xmin-10 || pos>me->xmax+30 ) {
+	BDFCharFree(me);
 return( NULL );
+    }
     if ( (minx=me->xmin)>0 ) minx = 0;
     if ( (maxx=me->xmax)<me->width ) maxx = me->width;
     if ( pos<minx ) minx = pos-2;
@@ -2886,6 +2978,7 @@ return( NULL );
 	     COLOR_RED(bg) + (l*(COLOR_RED(fg)-COLOR_RED(bg)))/((1<<clut_scale)-1),
 	     COLOR_GREEN(bg) + (l*(COLOR_GREEN(fg)-COLOR_GREEN(bg)))/((1<<clut_scale)-1),
 	     COLOR_BLUE(bg) + (l*(COLOR_BLUE(fg)-COLOR_BLUE(bg)))/((1<<clut_scale)-1) );
+    BDFCharFree(me);
 return( img );
 }
 
@@ -2908,8 +3001,12 @@ return( NULL );
     others = malloc(gv->part_cnt*sizeof(BDFChar *));
     for ( i=0; i<gv->part_cnt; ++i ) {
 	SplineChar *othersc = SFGetChar(sf,-1,gv->parts[i].component);
-	if ( othersc==NULL )
+	if ( othersc==NULL ) {
+	    for ( j=0; j<i; ++j )
+		BDFCharFree(others[j]);
+	    free(others);
 return( NULL );
+	}
 	others[i] = Rasterize(othersc,def_layer);
     }
     if ( is_horiz ) {
@@ -3073,6 +3170,10 @@ return( NULL );
 	    yoff += rint(gv->parts[i].fullAdvance*scale) - overlap + others[i]->ymin/* Only does anything if i==0, then it normalizes the rest to the same baseline */;
 	}
     }
+    for ( i=0; i<gv->part_cnt; ++i )
+	BDFCharFree(others[i]);
+    BDFCharFree(me);
+    free(others);
 
     memset(base->clut,'\0',sizeof(*base->clut));
     bg = GDrawGetDefaultBackground(NULL);
@@ -3097,6 +3198,7 @@ static GImage *CI_GetConstructedImage(const void *_ci) {
     gv = CI_ParseVariants(NULL,ci,is_horiz,NULL,0,true);
 
     ret = GV_GetConstructedImage(ci->sc,ci->def_layer,gv,is_horiz);
+    GlyphVariantsFree(gv);
 return( ret );
 }
 
@@ -3219,6 +3321,10 @@ return( NULL );
 	     COLOR_RED(bg) + (l*(COLOR_RED(fg)-COLOR_RED(bg)))/((1<<clut_scale)-1),
 	     COLOR_GREEN(bg) + (l*(COLOR_GREEN(fg)-COLOR_GREEN(bg)))/((1<<clut_scale)-1),
 	     COLOR_BLUE(bg) + (l*(COLOR_BLUE(fg)-COLOR_BLUE(bg)))/((1<<clut_scale)-1) );
+     BDFCharFree(me);
+     for ( i=0; i<extracnt; ++i )
+	 BDFCharFree(extras[i]);
+     free(extras);
 return( img );
 }
 
@@ -3259,7 +3365,7 @@ static void CI_KerningPopupPrepare(GGadget *g, int r, int c) {
 	SFGetChar(ci->sc->parent,-1, old[cols*r+1].u.md_str)==NULL )
 return;
     ci->r = r; ci->c = c;
-    GGadgetPreparePopupImage(GGadgetGetWindow(g),NULL,ci,CI_GetKernedImage);
+    GGadgetPreparePopupImage(GGadgetGetWindow(g),NULL,ci,CI_GetKernedImage,CI_FreeKernedImage);
 }
 
 static void CI_SubsPopupPrepare(GGadget *g, int r, int c) {
@@ -3270,7 +3376,7 @@ static void CI_SubsPopupPrepare(GGadget *g, int r, int c) {
     if ( c<0 || c>=cols || r<0 || r>=rows )
 return;
     ci->r = r; ci->c = c;
-    GGadgetPreparePopupImage(GGadgetGetWindow(g),NULL,ci,_CI_GetImage);
+    GGadgetPreparePopupImage(GGadgetGetWindow(g),NULL,ci,_CI_GetImage,CI_FreeKernedImage);
 }
 
 static void CI_ConstructionPopupPrepare(GGadget *g, int r, int c) {
@@ -3280,7 +3386,7 @@ static void CI_ConstructionPopupPrepare(GGadget *g, int r, int c) {
     (void) GMatrixEditGet(g,&rows);
     if ( rows==0 )
 return;
-    GGadgetPreparePopupImage(GGadgetGetWindow(g),NULL,ci,CI_GetConstructedImage);
+    GGadgetPreparePopupImage(GGadgetGetWindow(g),NULL,ci,CI_GetConstructedImage,CI_FreeKernedImage);
 }
 
 static unichar_t **CI_GlyphNameCompletion(GGadget *t,int from_tab) {
@@ -3641,6 +3747,7 @@ struct hslrgb *SFFontCols(SplineFont *sf,struct hslrgb fontcols[6]) {
 	fontcols[i].g = ((colcount[i].color>>8 )&0xff)/255.0;
 	fontcols[i].b = ((colcount[i].color    )&0xff)/255.0;
     }
+    free(colcount);
     if ( cnt==0 )
 return( NULL );
 
@@ -3712,11 +3819,13 @@ static void CIFillup(CharInfo *ci) {
 
     temp = utf82u_copy(sc->name);
     GGadgetSetTitle(GWidgetGetControl(ci->gw,CID_UName),temp);
+    free(temp);
     CI_SetNameList(ci,sc->unicodeenc);
 
     sprintf(buffer,"U+%04x", sc->unicodeenc);
     temp = utf82u_copy(sc->unicodeenc==-1?"-1":buffer);
     GGadgetSetTitle(GWidgetGetControl(ci->gw,CID_UValue),temp);
+    free(temp);
 
     ubuf[0] = sc->unicodeenc;
     if ( sc->unicodeenc==-1 )
@@ -3803,6 +3912,7 @@ static void CIFillup(CharInfo *ci) {
 	}
 	upt[-1] = '\0';
 	GGadgetSetTitle(GWidgetGetControl(ci->gw,CID_Components),temp);
+	free(temp);
     }
 
     GGadgetSelectOneListItem(GWidgetGetControl(ci->gw,CID_Color),0);
@@ -3845,6 +3955,7 @@ static void CIFillup(CharInfo *ci) {
     GGadgetSetTitle8(GWidgetGetControl(ci->gw,CID_TeX_Italic),buffer);
     DevTabToString(&devtabstr,sc->italic_adjusts);
     GGadgetSetTitle8(GWidgetGetControl(ci->gw,CID_ItalicDevTab),devtabstr==NULL?"":devtabstr);
+    free(devtabstr);
 
     if ( sc->top_accent_horiz!=TEX_UNDEF )
 	sprintf(buffer,"%d",sc->top_accent_horiz);
@@ -3853,6 +3964,7 @@ static void CIFillup(CharInfo *ci) {
     GGadgetSetTitle8(GWidgetGetControl(ci->gw,CID_HorAccent),buffer);
     DevTabToString(&devtabstr,sc->top_accent_adjusts);
     GGadgetSetTitle8(GWidgetGetControl(ci->gw,CID_AccentDevTab),devtabstr==NULL?"":devtabstr);
+    free(devtabstr);
 
     GGadgetSetChecked(GWidgetGetControl(ci->gw,CID_IsExtended),sc->is_extended_shape);
 
@@ -3868,6 +3980,7 @@ static void CIFillup(CharInfo *ci) {
 		sc->vert_variants->italic_adjusts:
 		NULL);
 	GGadgetSetTitle8(GWidgetGetControl(ci->gw,CID_ExtItalicDev+0*100),devtabstr==NULL?"":devtabstr);
+	free(devtabstr);
 
 	g = GWidgetGetControl(ci->gw,CID_VariantList+1*100);
 	if ( sc->horiz_variants==NULL || sc->horiz_variants->variants==NULL )
@@ -3880,6 +3993,7 @@ static void CIFillup(CharInfo *ci) {
 		sc->horiz_variants->italic_adjusts:
 		NULL);
 	GGadgetSetTitle8(GWidgetGetControl(ci->gw,CID_ExtItalicDev+1*100),devtabstr==NULL?"":devtabstr);
+	free(devtabstr);
     }
     for ( i=0; i<2; ++i ) {
 	struct glyphvariants *gv = i ? sc->horiz_variants : sc->vert_variants ;
@@ -3949,6 +4063,8 @@ static void CI_DoCancel(CharInfo *ci) {
     int32 i,len;
     GTextInfo **ti = GGadgetGetList(GWidgetGetControl(ci->gw,CID_List+600),&len);
 
+    for ( i=0; i<len; ++i )
+	chunkfree(ti[i]->userdata,sizeof(HintMask));
     CI_Finish(ci);
 }
 
@@ -3978,6 +4094,7 @@ return( false );
     } else if ( event->type == et_destroy ) {
 	CharInfo *ci = GDrawGetUserData(gw);
 	ci->sc->charinfo = NULL;
+	free(ci);
     } else if ( event->type == et_map ) {
 	/* Above palettes */
 	GDrawRaise(gw);
@@ -5155,6 +5272,7 @@ return;
 	gcd[i].creator = GHVGroupCreate;
 
 	GGadgetsCreate(gw,gcd+i);
+	GTextInfoListFree(ti);
 	GHVBoxSetExpandableRow(gcd[i].ret,gb_expandglue);
 	GHVBoxSetExpandableCol(gcd[i-1].ret,gb_expandgluesame);
 	GHVBoxFitWindow(gcd[i].ret);

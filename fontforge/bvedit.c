@@ -215,8 +215,10 @@ void BCTransFunc(BDFChar *bc,enum bvtools type,int xoff,int yoff) {
 	    bc->xmax = xmax; bc->xmin = xmin; bc->bytes_per_line = bpl;
 	}
     }
-    if ( bitmap!=NULL )
+    if ( bitmap!=NULL ) {
+	free(bc->bitmap);
 	bc->bitmap = bitmap;
+    }
     BCCompressBitmap(bc);
 }
 
@@ -247,6 +249,7 @@ void BCRotateCharForVert(BDFChar *bc,BDFChar *from, BDFFont *frombdf) {
 
     BCPreserveState(bc);
     BCFlattenFloat(from);
+    free(bc->bitmap);
     bc->xmin = from->xmin; bc->xmax = from->xmax; bc->ymin = from->ymin; bc->ymax = from->ymax;
     bc->width = from->width; bc->bytes_per_line = from->bytes_per_line;
     bc->bitmap = malloc(bc->bytes_per_line*(bc->ymax-bc->ymin+1));
@@ -293,6 +296,7 @@ static void BCExpandBitmap(BDFChar *bc, int x, int y) {
 		memcpy(npt+bc->xmin-xmin,pt,bc->bytes_per_line);
 	    }
 	}
+	free(bc->bitmap);
 	bc->bitmap = bitmap;
 	bc->xmin = xmin; bc->xmax = xmax; bc->bytes_per_line = bpl;
 	bc->ymin = ymin; bc->ymax = ymax;
@@ -317,6 +321,7 @@ void BCExpandBitmapToEmBox(BDFChar *bc, int xmin, int ymin, int xmax, int ymax) 
     /* Expand a bitmap so it will always contain 0..width, ascent..descent */
     
     if ( !BCHasOutputtableBitmap( bc )) {
+	free( bc->bitmap );
 	bc->bytes_per_line = xmax - xmin + 1;
 	bc->xmin = xmin; bc->xmax = xmax;
 	bc->ymin = ymin; bc->ymax = ymax;
@@ -342,6 +347,13 @@ return;		/* Already clear */
 	bc->bitmap[y*bc->bytes_per_line+(x>>3)] &= ~(1<<(7-(x&7)));
     else
 	bc->bitmap[y*bc->bytes_per_line+(x>>3)] |= (1<<(7-(x&7)));
+}
+
+void BDFFloatFree(BDFFloat *sel) {
+    if ( sel==NULL )
+return;
+    free(sel->bitmap);
+    free(sel);
 }
 
 BDFFloat *BDFFloatCopy(BDFFloat *sel) {
@@ -485,6 +497,7 @@ void BCFlattenFloat(BDFChar *bc ) {
 		}
 	    }
 	}
+	BDFFloatFree(sel);
 	bc->selection = NULL;
     }
 }
@@ -690,7 +703,9 @@ void BCRestoreAfterOutput( BDFChar *bc ) {
 	bc->xmin = bc->backup->xmin; bc->xmax = bc->backup->xmax;
 	bc->ymin = bc->backup->ymin; bc->ymax = bc->backup->ymax;
 
+	free( bc->bitmap );
 	bc->bitmap = bc->backup->bitmap;
+	free( bc->backup );
 	bc->backup = NULL;
     }
 }
@@ -731,7 +746,9 @@ void BCRemoveDependent( BDFChar *dependent,BDFRefChar *ref ) {
 	    if ( dlist!=NULL )
 		pd->next = dlist->next;
 	}
+	chunkfree( dlist,sizeof( struct bdfcharlist ));
     }
+    free( ref );
 }
 
 void BCUnlinkThisReference( struct fontviewbase *fv,BDFChar *bc ) {
@@ -756,6 +773,7 @@ return;
 			bsc->refs = rnext;
 		    else
 			rprev->next = rnext;
+		    free( ref );
 		    BCCharChangedUpdate( bsc );
 		} else
 		    rprev = ref;

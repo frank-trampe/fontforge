@@ -282,8 +282,9 @@ AC_SUBST([MAINTAINER_TOOLS],["${i_do_have_maintainer_tools}"])
 
 AC_SEARCH_LIBS([cos],[m])
 
-# libgc (BDW garbage collector)
-PKG_CHECK_MODULES([LIBGC],[bdw-gc >= 7.2])
+dnl FIXME: Is this needed, given we are using libltdl?
+dnl The dlopen() function is in the C library for *BSD and in libdl on GLIBC-based systems
+dnl AC_SEARCH_LIBS([dlopen], [dl dld])
 
 FONTFORGE_CONFIG_X_LIBRARIES
 
@@ -418,6 +419,7 @@ if test "$gl_gcc_warnings" = yes; then
 
   # Add some more safety measures
   gl_WARN_ADD([-D_FORTIFY_SOURCE=2])
+  gl_WARN_ADD([-fmudflap])
 
   # When compiling with GCC, prefer -isystem to -I when including system
   # include files, to avoid generating useless diagnostics for the files.

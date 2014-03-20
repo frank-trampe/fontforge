@@ -117,6 +117,24 @@ struct ofl_state {
     /* it may be displayed quite differently */
 };
 
+static char *strconcat_free(char *str1, char *str2) {
+    char *ret;
+    int len;
+
+    if ( str1==NULL )
+	return( str2 );
+    if ( str2==NULL )
+	return( str1 );
+
+    len = strlen(str1);
+    if ( (ret=malloc(len+strlen(str2)+1))!=NULL ) {
+	strcpy(ret,str1);
+	strcpy(ret+len,str2);
+    }
+    free(str1); free(str2);
+    return( ret );
+}
+
 static char *despace(char *str) {
     char *to = str, *orig = str;
 
@@ -272,6 +290,7 @@ return( NULL );
 	temp = copyn(start,end-start);
 	start = end;
 	date = parseOFLibDate(temp);
+	free(temp);
 
 	if ( (start = strstr(start,"<th>tags:</th>"))==NULL )
     break;
@@ -288,7 +307,7 @@ return( NULL );
 	    ptend = skip_over_plain_text(test);
 	    temp = despace(copyn(test,ptend-test));
 	    test = ptend;
-	    taglist = strconcat(taglist,temp);
+	    taglist = strconcat_free(taglist,temp);
 	    /* Plain text alternates between tag and comma, we want both */
 	    test = skip_over_plain_text(test);
 	    if ( test==NULL )
@@ -375,13 +394,32 @@ return( NULL );
 return( block );
 }
 
+static void oflfiFreeContents(struct ofl_font_info *oflfi) {
+    struct ofl_download_urls *du, *next;
+
+    free(oflfi->name);
+    free(oflfi->author);
+    free(oflfi->taglist);
+    for ( du=oflfi->urls; du!=NULL; du=next ) {
+	next = du->next;
+	free(du->comment);
+	free(du->url);
+	chunkfree(du,sizeof(*du));
+    }
+    free(oflfi->preview_filename);
+    if ( oflfi->preview!=NULL )
+	GImageDestroy(oflfi->preview);
+}
+
 static int OflInfoMerge(struct ofl_state *all,struct ofl_font_info *block) {
     int i,j,k,l,tot,lastj,anymatches;
     /* We return whether any of the new font_infos were the same as */
     /* any of the old */
 
-    if ( block[0].name==NULL )
+    if ( block[0].name==NULL ) {
+	free(block);
 return( false );
+    }
 
     for ( i=0; block[i].name!=NULL; ++i );
     tot = i;
@@ -407,6 +445,7 @@ return( false );
 		all->fcnt += (tot-i);
 return( anymatches );
 	    } else if ( block[i].date == all->fonts[j].date ) {
+		oflfiFreeContents(&block[i]);
 		anymatches = true;
 		++i;
 	    } else {
@@ -535,6 +574,7 @@ return;
     if ( ofl_gettoken(file,&tok)!= tok_name || strcmp(tok.buf,"OFLibState")!=0 ) {
 	/* Not an OFLibState file */
 	fclose(file);
+	free(tok.buf);
 return;
     }
     cur = NULL;
@@ -594,6 +634,7 @@ return;
 	}
 	while ( (ch=getc(file))!=EOF && ch!='\n' );
     }
+    free(tok.buf);
     fclose(file);
 }
 
@@ -962,6 +1003,7 @@ static void PreviewThreadsKill(OFLibDlg *d) {
        pthread_join(cur->preview_thread,&status);
 	if ( cur->result!=NULL )
 	    fclose(cur->result);
+	chunkfree(cur,sizeof(*cur));
     }
     d->active = NULL;
 }
@@ -995,6 +1037,7 @@ pthread_exit(NULL);
 	pthread_mutex_destroy(&d->http_thread_can_do_stuff);
 	pthread_mutex_destroy(&d->http_thread_done);
     }
+    free(d->databuf);
     d->databuf = NULL;
     d->datalen = 0;
     d->done = 0;
@@ -1107,6 +1150,7 @@ return;
 	if ( sf==NULL ) {
 	    fclose(final);
 	    unlink(name);
+	    free(name);
 	    GDrawSetCursor(d->gw,ct_mypointer);
 return;
 	}
@@ -1119,6 +1163,7 @@ return;
 	SplineFontFree(sf);
     }
     cur->fi->preview_filename = copy(strrchr(name,'/')+1);
+    free(name);
 
     OFLibEnableButtons(d);		/* This will load the image */
     DumpOFLibState(&d->all);
@@ -1167,6 +1212,7 @@ static void CheckPreviewActivity(OFLibDlg *d) {
 		d->active = next;
 	    else
 		prev->next = next;
+	    chunkfree(cur,sizeof(*cur));
 	} else {
 	    prev = cur;
 	}
@@ -1295,8 +1341,10 @@ static void OFLibEnableButtons(OFLibDlg *d) {
 	snprintf( buffer, sizeof(buffer), "%s/%s", getOFLibDir(), d->show[onefont]->preview_filename );
 	if ( access(buffer,R_OK)!=-1 )
 	    d->show[onefont]->preview = GImageRead(buffer);
-	if ( d->show[onefont]->preview==NULL )
+	if ( d->show[onefont]->preview==NULL ) {
+	    free(d->show[onefont]->preview_filename);
 	    d->show[onefont]->preview_filename = NULL;
+	}
     }
     if ( onefont>=0 && d->show[onefont]->preview!=NULL ) {
 	int same, width, height, nh;
@@ -1386,6 +1434,7 @@ return( true );
 	    if ( temp==NULL ) {
 		fclose(final);
 		unlink(name);
+		free(name);
 return( true );
 	    }
 	    rewind(temp);
@@ -1416,6 +1465,7 @@ return( true );
 	    SplineFontFree(sf);
 	}
 	d->show[onefont]->preview_filename = copy(strrchr(name,'/')+1);
+	free(name);
 	OFLibEnableButtons(d);		/* This will load the image */
 	DumpOFLibState(&d->all);
     }
@@ -1469,6 +1519,11 @@ static int oflib_e_h(GWindow gw, GEvent *event) {
 	HttpThreadKill(d);
 	PreviewThreadsKill(d);
 	DumpOFLibState(&d->all);
+	for ( i=0; i<d->all.fcnt; ++i )
+	    oflfiFreeContents(&d->all.fonts[i]);
+	free(d->all.fonts);
+	free(d->show);
+	free(d);
 	active = NULL;
 	pthread_key_delete(jump_key);
     } else if ( event->type == et_char ) {

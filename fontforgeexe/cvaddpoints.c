@@ -305,6 +305,7 @@ static void CVMergeSPLS(CharView *cv,SplineSet *ss, SplinePoint *base,SplinePoin
 	SplineSetSpirosClear(ss);
     cv->p.spl->last = cv->p.spl->first = NULL;
     cv->p.spl->spiros = 0;
+    SplinePointListFree(cv->p.spl);
     cv->p.spl = NULL;
 }
 

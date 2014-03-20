@@ -201,6 +201,9 @@ return;
 	    e = apt->aenext;
 	}
     }
+    free(el.ordered);
+    free(el.ends);
+    ElFreeEI(&el);
 }
 
 static SplineSet *AddVerticalExtremaAndMove(SplineSet *base,real shadow_length,
@@ -435,6 +438,8 @@ static int ClipLineTo3D(Spline *line,SplineSet *spl) {
 	SplinePoint *from = line->from;
 	SplineBisect(line,t);
 	line = from->next;
+	SplinePointFree(line->to->next->to);
+	SplineFree(line->to->next);
 	line->to->next = NULL;
 return( true );
     }
@@ -487,8 +492,10 @@ static extended *BottomFindIntersections(Spline *bottom,SplineSet *lines,SplineS
 	}
 	lines = lines->next;
     }
-    if ( tcnt==0 )
+    if ( tcnt==0 ) {
+	free(ts);
 return( NULL );
+    }
     for ( i=0; i<tcnt; ++i ) for ( j=i+1; j<tcnt; ++j ) {
 	if ( ts[i]>ts[j] ) {
 	    extended temp = ts[i];
@@ -526,6 +533,9 @@ static int MidLineCompetes(Spline *s,bigreal t,bigreal shadow_length,SplineSet *
     int ret;
 
     ret = ClipLineTo3D(line,spl);
+    SplinePointFree(line->to);		/* This might not be the same as to */
+    SplinePointFree(line->from);	/* This will be the same as from */
+    SplineFree(line);
 return( !ret );
 }
 
@@ -573,6 +583,9 @@ static SplineSet *MergeLinesToBottoms(SplineSet *bottoms,SplineSet *lines) {
 		prev->next = l->next;
 	    SplineMake(l->first,bottoms->first,l->first->next->order2);
 	    bottoms->first = l->first;
+	    SplineFree(l->last->prev);
+	    SplinePointFree(l->last);
+	    chunkfree(l,sizeof(*l));
 	}
 	for ( prev=NULL, l=lines;
 		l!=NULL && (l->last->me.x!=bottoms->last->me.x || l->last->me.y!=bottoms->last->me.y);
@@ -585,6 +598,9 @@ static SplineSet *MergeLinesToBottoms(SplineSet *bottoms,SplineSet *lines) {
 	    SplineMake(bottoms->last,l->first,l->first->next->order2);
 	    bottoms->last = l->first;
 	    l->first->next = NULL;
+	    SplineFree(l->last->prev);
+	    SplinePointFree(l->last);
+	    chunkfree(l,sizeof(*l));
 	}
 	bottoms = bottoms->next;
     }
@@ -650,8 +666,10 @@ static SplineSet *ClipBottomTo3D(SplineSet *bottom,SplineSet *lines,SplineSet *s
 		    } else
 			++i;
 		}
+		free(ts);
 	    }
 	}
+	SplinePointListFree(bottom);
 	bottom = next;
     }
 return( head );
@@ -708,6 +726,7 @@ return( NULL );
 	si.radius = outline_width;
 	temp = SplinePointListCopy(spl);	/* SplineSetStroke confuses the direction I think */
 	internal = SplineSetStroke(temp,&si,order2);
+	SplinePointListsFree(temp);
 	SplineSetsAntiCorrect(internal);
     }
 
@@ -722,7 +741,9 @@ return( NULL );
 	if ( outline_width!=0 ) {
 	    memset(&si,0,sizeof(si));
 	    si.radius = outline_width/2;
+	    /*si.removeoverlapifneeded = true;*/
 	    fatframe = SplineSetStroke(spl,&si,order2);
+	    SplinePointListsFree(spl);
 	    spl = fatframe; /* Don't try SplineSetRemoveOverlap: too likely to cause remove overlap problems. */
 	}
     }

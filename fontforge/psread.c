@@ -76,6 +76,36 @@ return( &dict->entries[i] );
 return( NULL );
 }
 
+static void dictfree(struct pskeydict *dict) {
+    int i;
+
+    for ( i=0; i<dict->cnt; ++i ) {
+	if ( dict->entries[i].type==ps_string || dict->entries[i].type==ps_instr ||
+		dict->entries[i].type==ps_lit )
+	    free(dict->entries[i].u.str);
+	else if ( dict->entries[i].type==ps_array || dict->entries[i].type==ps_dict )
+	    dictfree(&dict->entries[i].u.dict);
+    }
+}
+
+static void garbagefree(struct garbage *all) {
+    struct garbage *junk, *next;
+    int i,j;
+
+    for ( junk = all; junk!=NULL; junk = next ) {
+	next = junk->next;
+	for ( j=0; j<junk->cnt; ++j ) {
+	    for ( i=0; i<junk->cnts[j]; ++i ) {
+		if ( junk->entries[j][i].type==ps_string || junk->entries[j][i].type==ps_instr ||
+			junk->entries[j][i].type==ps_lit )
+		    free(junk->entries[j][i].u.str);
+	    }
+	    free(junk->entries[j]);
+	}
+	if ( junk!=all )
+	    chunkfree(junk,sizeof(struct garbage));
+    }
+}
 /**************************** PostScript Importer *****************************/
 /* It's really dumb. It ignores almost everything except linetos and curvetos */
 /*  anything else, function calls, ... is thrown out, if this breaks a lineto */
@@ -256,6 +286,8 @@ return( nextch(wrapper));
 	wrapper->top = io->prev;
 	if ( io->isstopped )
 	    wrapper->endedstopped = true;
+	/* free(io->start); FIXME: Not always alloced*/
+	free(io);
 	io = wrapper->top;
     }
 return( EOF );
@@ -312,6 +344,8 @@ static void ioescapeloop(IO *wrapper) {
     while ( io->prev!=NULL && !io->isstopped ) {
 	iop = io->prev;
 	wasloop = io->isloop;
+	/* free(io->start); FIXME: not always alloced*/
+	free(io);
 	if ( wasloop ) {
 	    wrapper->top = iop;
 return;
@@ -334,6 +368,8 @@ static int ioescapestopped(IO *wrapper, struct psstack *stack, int sp, const siz
     while ( io->prev!=NULL ) {
 	iop = io->prev;
 	wasstopped = io->isstopped;
+	/* free(io->start); FIXME: not always alloced*/
+	free(io);
 	if ( wasstopped ) {
 	    wrapper->top = iop;
 	    if ( sp<(int)bsize ) {
@@ -574,8 +610,13 @@ static int AddEntry(struct pskeydict *dict,struct psstack *stack, int sp) {
     int i;
 
     if ( dict->cnt>=dict->max ) {
-        dict->max += 30;
-        dict->entries = realloc(dict->entries,dict->max*sizeof(struct pskeyval));
+	if ( dict->cnt==0 ) {
+	    dict->max = 30;
+	    dict->entries = malloc(dict->max*sizeof(struct pskeyval));
+	} else {
+	    dict->max += 30;
+	    dict->entries = realloc(dict->entries,dict->max*sizeof(struct pskeyval));
+	}
     }
     if ( sp<2 )
 return(sp);
@@ -588,7 +629,12 @@ return(sp-2);
     for ( i=0; i<dict->cnt; ++i )
 	if ( strcmp(dict->entries[i].key,stack[sp-2].u.str)==0 )
     break;
-    if ( i==dict->cnt ) {
+    if ( i!=dict->cnt ) {
+	free(stack[sp-2].u.str);
+	if ( dict->entries[i].type==ps_string || dict->entries[i].type==ps_instr ||
+		dict->entries[i].type==ps_lit )
+	    free(dict->entries[i].u.str);
+    } else {
 	memset(&dict->entries[i],'\0',sizeof(struct pskeyval));
 	dict->entries[i].key = stack[sp-2].u.str;
 	++dict->cnt;
@@ -603,6 +649,13 @@ static int forgetstack(struct psstack *stack, int forgets, int sp) {
     /* we presume they are garbage that has accumulated because we */
     /*  don't understand all of PS */
     int i;
+    for ( i=0; i<forgets; ++i ) {
+	if ( stack[i].type==ps_string || stack[i].type==ps_instr ||
+		stack[i].type==ps_lit )
+	    free(stack[i].u.str);
+	else if ( stack[i].type==ps_array || stack[i].type==ps_dict )
+	    dictfree(&stack[i].u.dict);
+    }
     for ( i=forgets; i<sp; ++i )
 	stack[i-forgets] = stack[i];
 return( sp-forgets );
@@ -624,6 +677,7 @@ static int rollstack(struct psstack *stack, int sp) {
 		temp[i] = stack[sp-n+i];
 	    for ( i=0; i<n; ++i )
 		stack[sp-n+(i+j)%n] = temp[i];
+	    free(temp);
 	}
     }
 return( sp );
@@ -812,6 +866,26 @@ static void printarray(struct pskeydict *dict) {
     printf( "]" );
 }
 
+static void freestuff(struct psstack *stack, int sp, struct pskeydict *dict,
+	GrowBuf *gb, struct garbage *tofrees) {
+    int i;
+
+    free(gb->base);
+    for ( i=0; i<dict->cnt; ++i ) {
+	if ( dict->entries[i].type==ps_string || dict->entries[i].type==ps_instr ||
+		dict->entries[i].type==ps_lit )
+	    free(dict->entries[i].u.str);
+	free(dict->entries[i].key);
+    }
+    free( dict->entries );
+    for ( i=0; i<sp; ++i ) {
+	if ( stack[i].type==ps_string || stack[i].type==ps_instr ||
+		stack[i].type==ps_lit )
+	    free(stack[i].u.str);
+    }
+    garbagefree(tofrees);
+}
+
 static void DoMatTransform(int tok,int sp,struct psstack *stack) {
     real invt[6], t[6];
 
@@ -824,6 +898,7 @@ static void DoMatTransform(int tok,int sp,struct psstack *stack) {
 	t[2] = stack[sp].u.dict.entries[2].u.val;
 	t[1] = stack[sp].u.dict.entries[1].u.val;
 	t[0] = stack[sp].u.dict.entries[0].u.val;
+	dictfree(&stack[sp].u.dict);
 	if ( tok==pt_itransform || tok==pt_idtransform ) {
 	    MatInverse(invt,t);
 	    memcpy(t,invt,sizeof(t));
@@ -985,6 +1060,7 @@ return( NULL );
 	}
     } else if ( *pt!='<' ) {
 	LogError( _("Unknown string type\n" ));
+	free(base);
 return( NULL );
     } else if ( pt[1]!='~' ) {
 	/* A hex string. Ignore any characters which aren't hex */
@@ -1049,6 +1125,7 @@ return( NULL );
     *len = upt-base;
     ret = malloc(upt-base);
     memcpy(ret,base,upt-base);
+    free(base);
 return(ret);
 }
 
@@ -1089,6 +1166,7 @@ return( sp-5 );
 
     if ( width<=0 || height<=0 || ((width+7)/8)*height>datalen ) {
 	LogError( _("Width or height arguments to imagemask contain invalid values\n(either negative or they require more data than provided).\n" ));
+	free(data);
 return( sp-5 );
     }
     trans[0] = stack[sp-2].u.dict.entries[0].u.val;
@@ -1124,6 +1202,7 @@ return( sp-5 );
 			(0x80>>((width-j-1)&7));
 	}
     }
+    free(data);
 
     ent = calloc(1,sizeof(Entity));
     ent->type = et_image;
@@ -1154,11 +1233,15 @@ return;		/* Hunh. I don't understand it. I give up */
 return;		/* Hunh. I don't understand it. I give up */
     glyphname = copy(tokbuf);
    tok = nextpstoken(wrapper,&dval,tokbuf,toksize);
-   if ( strcmp(tokbuf,"get")!=0 )
+   if ( strcmp(tokbuf,"get")!=0 ) {
+	free(glyphname);
 	return;	/* Hunh. I don't understand it. I give up */
+   }
    tok = nextpstoken(wrapper,&dval,tokbuf,toksize);
-   if ( strcmp(tokbuf,"exec")!=0 )
+   if ( strcmp(tokbuf,"exec")!=0 ) {
+	free(glyphname);
 	return;	/* Hunh. I don't understand it. I give up */
+    }
 
     /* Ok, it looks very much like a reference to glyphname */
     ref = RefCharCreate();
@@ -1375,8 +1458,24 @@ static void _InterpretPS(IO *wrapper, EntityChar *ec, RetStack *rs) {
 	    }
 	  break;
 	  case pt_pop:
+	    if ( sp>0 ) {
+		--sp;
+		if ( stack[sp].type==ps_string || stack[sp].type==ps_instr ||
+			stack[sp].type==ps_lit )
+		    free(stack[sp].u.str);
+		else if ( stack[sp].type==ps_array || stack[sp].type==ps_dict )
+		    dictfree(&stack[sp].u.dict);
+	    }
+	  break;
 	  case pt_clear:
-            sp = 0;
+	    while ( sp>0 ) {
+		--sp;
+		if ( stack[sp].type==ps_string || stack[sp].type==ps_instr ||
+			stack[sp].type==ps_lit )
+		    free(stack[sp].u.str);
+		else if ( stack[sp].type==ps_array || stack[sp].type==ps_dict )
+		    dictfree(&stack[sp].u.dict);
+	    }
 	  break;
 	  case pt_dup:
 	    if ( sp>0 && sp<sizeof(stack)/sizeof(stack[0]) ) {
@@ -1658,6 +1757,8 @@ static void _InterpretPS(IO *wrapper, EntityChar *ec, RetStack *rs) {
 			(stack[sp-2].type == ps_num && strstr(stack[sp-1].u.str,"setcachedevice")!=NULL)) &&
 			stack[sp-1].type==ps_instr )
 		    pushio(wrapper,NULL,stack[sp-1].u.str,0);
+		if ( stack[sp-1].type==ps_string || stack[sp-1].type==ps_instr || stack[sp-1].type==ps_lit )
+		    free(stack[sp-1].u.str);
 		sp -= 2;
 	    } else if ( sp==1 && stack[sp-1].type==ps_instr ) {
 		/*This can happen when reading our type3 fonts, we get passed */
@@ -1666,6 +1767,7 @@ static void _InterpretPS(IO *wrapper, EntityChar *ec, RetStack *rs) {
 		if ( strstr(stack[sp-1].u.str,"setcachedevice")!=NULL ||
 			strstr(stack[sp-1].u.str,"setcharwidth")!=NULL )
 		    pushio(wrapper,NULL,stack[sp-1].u.str,0);
+		free(stack[sp-1].u.str);
 		sp = 0;
 	    }
 	  break;
@@ -1678,6 +1780,10 @@ static void _InterpretPS(IO *wrapper, EntityChar *ec, RetStack *rs) {
 		    if ( stack[sp-1].type==ps_instr )
 			pushio(wrapper,NULL,stack[sp-1].u.str,0);
 		}
+		if ( stack[sp-1].type==ps_string || stack[sp-1].type==ps_instr || stack[sp-1].type==ps_lit )
+		    free(stack[sp-1].u.str);
+		if ( stack[sp-2].type==ps_string || stack[sp-2].type==ps_instr || stack[sp-2].type==ps_lit )
+		    free(stack[sp-2].u.str);
 		sp -= 3;
 	    }
 	  break;
@@ -1701,6 +1807,7 @@ static void _InterpretPS(IO *wrapper, EntityChar *ec, RetStack *rs) {
 			while ( init>=limit ) { ++cnt; init += incr; }
 		    }
 		    pushio(wrapper,NULL,func,cnt);
+		    free(func);
 		}
 	    }
 	  break;
@@ -1714,6 +1821,7 @@ static void _InterpretPS(IO *wrapper, EntityChar *ec, RetStack *rs) {
 		    func = stack[sp-1].u.str;
 		    --sp;
 		    pushio(wrapper,NULL,func,cnt);
+		    free(func);
 		}
 	    }
 	  break;
@@ -1727,6 +1835,7 @@ static void _InterpretPS(IO *wrapper, EntityChar *ec, RetStack *rs) {
 		    func = stack[sp-1].u.str;
 		    sp -= 2;
 		    pushio(wrapper,NULL,func,cnt);
+		    free(func);
 		}
 	    }
 	  break;
@@ -1741,6 +1850,7 @@ static void _InterpretPS(IO *wrapper, EntityChar *ec, RetStack *rs) {
 		    func = stack[sp-1].u.str;
 		    --sp;
 		    pushio(wrapper,NULL,func,-1);
+		    free(func);
 		}
 	    }
 	  break;
@@ -1751,6 +1861,7 @@ static void _InterpretPS(IO *wrapper, EntityChar *ec, RetStack *rs) {
 	    if ( sp>=1 && stack[sp-1].type==ps_lit ) {
 		kv = lookup(&dict,stack[sp-1].u.str);
 		if ( kv!=NULL ) {
+		    free( stack[sp-1].u.str );
 		    stack[sp-1].type = kv->type;
 		    stack[sp-1].u = kv->u;
 		    if ( kv->type==ps_instr || kv->type==ps_lit )
@@ -1821,6 +1932,7 @@ static void _InterpretPS(IO *wrapper, EntityChar *ec, RetStack *rs) {
 			t[2] = stack[sp].u.dict.entries[2].u.val;
 			t[1] = stack[sp].u.dict.entries[1].u.val;
 			t[0] = stack[sp].u.dict.entries[0].u.val;
+			dictfree(&stack[sp].u.dict);
 			MatMultiply(t,transform,transform);
 		    }
 		}
@@ -1897,6 +2009,7 @@ static void _InterpretPS(IO *wrapper, EntityChar *ec, RetStack *rs) {
 	    }
 	  break;
 	  case pt_newpath:
+	    SplinePointListsFree(head);
 	    head = NULL;
 	    cur = NULL;
 	  break;
@@ -2087,6 +2200,8 @@ static void _InterpretPS(IO *wrapper, EntityChar *ec, RetStack *rs) {
 		    cur->first->noprevcp = oldlast->noprevcp;
 		    oldlast->prev->from->next = NULL;
 		    cur->last = oldlast->prev->from;
+		    SplineFree(oldlast->prev);
+		    SplinePointFree(oldlast);
 		}
 		CheckMake(cur->last,cur->first);
 		SplineMake3(cur->last,cur->first);
@@ -2111,6 +2226,7 @@ static void _InterpretPS(IO *wrapper, EntityChar *ec, RetStack *rs) {
 		dash_offset = stack[sp+1].u.val;
 		for ( i=0; i<DASH_MAX && i<stack[sp].u.dict.cnt; ++i )
 		    dashes[i] = stack[sp].u.dict.entries[i].u.val;
+		dictfree(&stack[sp].u.dict);
 	    }
 	  break;
 	  case pt_currentlinecap: case pt_currentlinejoin:
@@ -2302,6 +2418,7 @@ static void _InterpretPS(IO *wrapper, EntityChar *ec, RetStack *rs) {
 	  case pt_clip:
 	    /* I really should intersect the old clip path with the new, but */
 	    /*  I don't trust my intersect routine, crashes too often */
+	    SplinePointListsFree(clippath);
 	    clippath = SplinePointListCopy(head);
 	    if ( clippath!=NULL && clippath->first!=clippath->last ) {
 		SplineMake3(clippath->last,clippath->first);
@@ -2309,7 +2426,15 @@ static void _InterpretPS(IO *wrapper, EntityChar *ec, RetStack *rs) {
 	    }
 	  break;
 	  case pt_imagemask:
-	    sp = PSAddImagemask(ec,stack,sp,transform,fore);
+	    i = PSAddImagemask(ec,stack,sp,transform,fore);
+	    while ( sp>i ) {
+		--sp;
+		if ( stack[sp].type==ps_string || stack[sp].type==ps_instr ||
+			stack[sp].type==ps_lit )
+		    free(stack[sp].u.str);
+		else if ( stack[sp].type==ps_array || stack[sp].type==ps_dict )
+		    dictfree(&stack[sp].u.dict);
+	    }
 	  break;
 
 	  /* We don't do these right, but at least we'll avoid some errors with this hack */
@@ -2347,6 +2472,7 @@ static void _InterpretPS(IO *wrapper, EntityChar *ec, RetStack *rs) {
 		linecap = gsaves[gsp].linecap;
 		linejoin = gsaves[gsp].linejoin;
 		fore = gsaves[gsp].fore;
+		SplinePointListsFree(clippath);
 		clippath = gsaves[gsp].clippath;
 	    }
 	  break;
@@ -2476,8 +2602,16 @@ static void _InterpretPS(IO *wrapper, EntityChar *ec, RetStack *rs) {
 	    break;
 	    if ( (unsigned)i==sp )
 		LogError( _("No mark in cleartomark\n") );
-	    else
-		sp = i - 1;
+	    else {
+		while ( sp>=i ) {
+		    --sp;
+		    if ( stack[sp].type==ps_string || stack[sp].type==ps_instr ||
+			    stack[sp].type==ps_lit )
+			free(stack[sp].u.str);
+		    else if ( stack[sp].type==ps_array || stack[sp].type==ps_dict )
+			dictfree(&stack[sp].u.dict);
+		}
+	    }
 	  break;
 	  case pt_closearray:
 	    for ( i=0; (unsigned)i<sp; ++i )
@@ -2550,6 +2684,7 @@ static void _InterpretPS(IO *wrapper, EntityChar *ec, RetStack *rs) {
 		    if ( tok==pt_outputd )
 			printf( stack[sp].type==ps_lit ? "" :
 				stack[sp].type==ps_string ? ")" : "}" );
+		    free(stack[sp].u.str);
 		  break;
 		  case ps_void:
 		    printf( "-- void --" );
@@ -2557,8 +2692,10 @@ static void _InterpretPS(IO *wrapper, EntityChar *ec, RetStack *rs) {
 		  case ps_array:
 		    if ( tok==pt_outputd ) {
 			printarray(&stack[sp].u.dict);
+			dictfree(&stack[sp].u.dict);
 		  break;
 		    } /* else fall through */
+		    dictfree(&stack[sp].u.dict);
 		  default:
 		    printf( "-- nostringval --" );
 		  break;
@@ -2573,6 +2710,7 @@ static void _InterpretPS(IO *wrapper, EntityChar *ec, RetStack *rs) {
 	    /* I shan't distinguish between integers and reals */
 	    if ( sp>=1 && stack[sp-1].type==ps_string ) {
 		double val = strtod(stack[sp-1].u.str,NULL);
+		free(stack[sp-1].u.str);
 		stack[sp-1].u.val = val;
 		stack[sp-1].type = ps_num;
 	    }
@@ -2618,11 +2756,13 @@ static void _InterpretPS(IO *wrapper, EntityChar *ec, RetStack *rs) {
 		  break;
 		  case ps_string: case ps_instr: case ps_lit:
 		    sprintf( stack[sp-1].u.str, "%s", stack[sp-2].u.str );
+		    free(stack[sp].u.str);
 		  break;
 		  case ps_void:
 		    printf( "-- void --" );
 		  break;
 		  case ps_array:
+		    dictfree(&stack[sp].u.dict);
 		  default:
 		    sprintf( stack[sp-1].u.str, "-- nostringval --" );
 		  break;
@@ -2661,16 +2801,22 @@ static void _InterpretPS(IO *wrapper, EntityChar *ec, RetStack *rs) {
 	for ( j=i+1; (unsigned)j<sp; ++j )
 	    rs->stack[j-i-1] = stack[j].u.val;
     }
+    freestuff(stack,sp,&dict,&gb,&tofrees);
     if ( head!=NULL ) {
 	ent = EntityCreate(head,linecap,linejoin,linewidth,transform,clippath);
 	ent->next = ec->splines;
 	ec->splines = ent;
     }
-    gsp = 0;
-    ECCategorizePoints(ec);
+    while ( gsp>0 ) {
+	--gsp;
+	SplinePointListsFree(gsaves[gsp].clippath);
+    }
+    SplinePointListsFree(clippath);
+    ECCatagorizePoints(ec);
     if ( ec->width == UNDEFINED_WIDTH )
 	ec->width = wrapper->advance_width;
     setlocale(LC_NUMERIC,oldloc);
+    free(tokbuf);
 }
 
 static void InterpretPS(FILE *ps, char *psstr, EntityChar *ec, RetStack *rs) {
@@ -2686,8 +2832,11 @@ static SplinePointList *EraseStroke(SplineChar *sc,SplinePointList *head,SplineP
     SplineSet *spl, *last;
     SplinePoint *sp;
 
-    if ( head==NULL ) /* Pointless, but legal */
+    if ( head==NULL ) {
+	/* Pointless, but legal */
+	SplinePointListsFree(erase);
 return( NULL );
+    }
 
     last = NULL;
     for ( spl=head; spl!=NULL; spl=spl->next ) {
@@ -2786,6 +2935,7 @@ return( head );
 		    for ( nlast=temp; nlast->next!=NULL; nlast=nlast->next );
 	    }
 	    new = SplinePointListTransform(new,transform,tpt_AllPoints);
+	    SplinePointListsFree(transed);
 	    if ( handle_eraser && sc->layers[layer].stroke_pen.brush.col==0xffffff ) {
 		head = EraseStroke(sc,head,new);
 		last = head;
@@ -2846,8 +2996,12 @@ void SFSplinesFromLayers(SplineFont *sf,int tostroke) {
 	LayerDefault(&new[ly_fore]);
 	new[ly_fore].splines = splines;
 	new[ly_fore].refs = head;
-	for ( layer=ly_fore; layer<sc->layer_cnt; ++layer )
+	for ( layer=ly_fore; layer<sc->layer_cnt; ++layer ) {
 	    SplinePointListsMDFree(sc,sc->layers[layer].splines);
+	    RefCharsFree(sc->layers[layer].refs);
+	    ImageListsFree(sc->layers[layer].images);
+	}
+	free(sc->layers);
 	sc->layers = new;
 	sc->layer_cnt = 2;
 	for ( cv=sc->views; cv!=NULL; cv=cv->next ) {
@@ -2990,6 +3144,7 @@ SplinePointList *SplinesFromEntityChar(EntityChar *ec,int *flags,int is_stroked)
 			for ( nlast=temp; nlast->next!=NULL; nlast=nlast->next );
 		}
 		new = SplinePointListTransform(new,ent->u.splines.transform,tpt_AllPoints);
+		SplinePointListsFree(transed);
 		if ( handle_eraser && ent->u.splines.stroke.col==0xffffff ) {
 		    head = EraseStroke(ec->sc,head,new);
 		    last = head;
@@ -3006,7 +3161,7 @@ SplinePointList *SplinesFromEntityChar(EntityChar *ec,int *flags,int is_stroked)
 	    }
 	    /* If they have neither a stroke nor a fill, pretend they said fill */
 	    if ( ent->u.splines.fill.col==0xffffffff && ent->u.splines.stroke.col!=0xffffffff )
-                ;
+		SplinePointListsFree(ent->u.splines.splines);
 	    else if ( handle_eraser && ent->u.splines.fill.col==0xffffff ) {
 		head = EraseStroke(ec->sc,head,ent->u.splines.splines);
 		last = head;
@@ -3022,6 +3177,8 @@ SplinePointList *SplinesFromEntityChar(EntityChar *ec,int *flags,int is_stroked)
 		    for ( last = new; last->next!=NULL; last=last->next );
 	    }
 	}
+	SplinePointListsFree(ent->clippath);
+	free(ent);
     }
 return( head );
 }
@@ -3104,6 +3261,7 @@ static void SCInterpretPS(FILE *ps,SplineChar *sc) {
     SCAppendEntityLayers(sc,ec.splines);
     if ( sc->layer_cnt==1 ) ++sc->layer_cnt;
     sc->layers[ly_fore].refs = revrefs(ec.refs);
+    free(wrapper.top);
 }
 
 void PSFontInterpretPS(FILE *ps,struct charprocs *cp,char **encoding) {
@@ -3139,6 +3297,7 @@ void PSFontInterpretPS(FILE *ps,struct charprocs *cp,char **encoding) {
 	    }
 	}
     }
+    free(wrapper.top);
 
     /* References were done by name in the postscript. we stored the names in */
     /*  ref->sc (which is a hack). Now look up all those names and replace */
@@ -3154,6 +3313,7 @@ void PSFontInterpretPS(FILE *ps,struct charprocs *cp,char **encoding) {
 	    for ( j=0; j<cp->next; ++j )
 		if ( strcmp(cp->keys[j],refname)==0 )
 	    break;
+	    free(ref->sc);	/* a string, not a splinechar */
 	    if ( j!=cp->next ) {
 		ref->sc = cp->values[j];
 		SCMakeDependent(cp->values[i],ref->sc);
@@ -3166,6 +3326,7 @@ void PSFontInterpretPS(FILE *ps,struct charprocs *cp,char **encoding) {
 		else
 		    p->next = next;
 		ref->next = NULL;
+		RefCharFree(ref);
 	    }
 	}
     }
@@ -3246,6 +3407,9 @@ return( head );
 	    if ( any && !codepointsonly ) {
 		item->psnames = calloc(max,sizeof(char *));
 		memcpy(item->psnames,names,max*sizeof(char *));
+	    } else {
+		for ( i=0; i<max; ++i )
+		    free(names[i]);
 	    }
 	    if ( head==NULL )
 		head = item;
@@ -3286,6 +3450,9 @@ return;		/* The "path" is just a single point created by a moveto */
 	    cur->first->noprevcp = oldlast->noprevcp;
 	    oldlast->prev->from->next = NULL;
 	    cur->last = oldlast->prev->from;
+	    chunkfree(oldlast->prev,sizeof(*oldlast));
+	    chunkfree(oldlast->hintmask,sizeof(HintMask));
+	    chunkfree(oldlast,sizeof(*oldlast));
 	}
 	CheckMake(cur->last,cur->first);
 	SplineMake3(cur->last,cur->first);
@@ -3295,6 +3462,7 @@ return;		/* The "path" is just a single point created by a moveto */
 
 static void UnblendFree(StemInfo *h ) {
     while ( h!=NULL ) {
+	chunkfree(h->u.unblended,sizeof(real [2][MmMax]));
 	h->u.unblended = NULL;
 	h = h->next;
     }
@@ -3355,6 +3523,7 @@ static void HintsRenumber(SplineChar *sc) {
 	    mapping[h->hintnumber] = i;
 	    h->hintnumber = i++;
 	}
+	chunkfree(h->u.unblended,sizeof(real [2][MmMax]));
 	h->u.unblended = NULL;
     }
     for ( h=sc->vstem; h!=NULL; h=h->next ) {
@@ -3362,6 +3531,7 @@ static void HintsRenumber(SplineChar *sc) {
 	    mapping[h->hintnumber] = i;
 	    h->hintnumber = i++;
 	}
+	chunkfree(h->u.unblended,sizeof(real [2][MmMax]));
 	h->u.unblended = NULL;
     }
     max = i;
@@ -3801,7 +3971,7 @@ SplineChar *PSCharStringToSplines(uint8 *type1, int len, struct pscontext *conte
 			    pt = XZALLOC(SplinePoint);
 			    pt->me.x = pops[1]; pt->me.y = pops[0];
 			    pt->noprevcp = true; pt->nonextcp = true;
-			    oldcur->next = NULL; spl = NULL;
+			    SplinePointListFree(oldcur->next); oldcur->next = NULL; spl = NULL;
 			    cur = oldcur;
 			    if ( cur!=NULL && cur->first!=NULL && (cur->first!=cur->last || cur->first->next==NULL) ) {
 				CheckMake(cur->last,pt);
@@ -3812,6 +3982,7 @@ SplineChar *PSCharStringToSplines(uint8 *type1, int len, struct pscontext *conte
 			}
 			--popsp;
 			cur->next = NULL;
+			SplinePointListsFree(spl);
 			oldcur = NULL;
 		      } else
 			LogError( _("Bad flex subroutine in %s\n"), name );
@@ -3929,6 +4100,7 @@ SplineChar *PSCharStringToSplines(uint8 *type1, int len, struct pscontext *conte
 			    temp[i] = stack[sp-N+i];
 			for ( i=0; i<N; ++i )
 			    stack[sp-N+i] = temp[(i+j)%N];
+			free(temp);
 		    }
 		}
 	      break;
@@ -4238,6 +4410,7 @@ SplineChar *PSCharStringToSplines(uint8 *type1, int len, struct pscontext *conte
 		    if ( cur!=NULL && cur->first==cur->last && cur->first->prev==NULL && is_type2 ) {
 			/* Two adjacent movetos should not create single point paths */
 			cur->first->me.x = current.x; cur->first->me.y = current.y;
+			SplinePointFree(pt);
 		    } else {
 			SplinePointList *spl = XZALLOC(SplinePointList);
 			spl->first = spl->last = pt;
@@ -4451,8 +4624,10 @@ SplineChar *PSCharStringToSplines(uint8 *type1, int len, struct pscontext *conte
     if ( cp!=0 ) { int i;
 	ret->countermasks = malloc(cp*sizeof(HintMask));
 	ret->countermask_cnt = cp;
-	for ( i=0; i<cp; ++i )
+	for ( i=0; i<cp; ++i ) {
 	    memcpy(&ret->countermasks[i],counters[i],sizeof(HintMask));
+	    chunkfree(counters[i],sizeof(HintMask));
+	}
     }
 
     /* Even in type1 fonts all paths should be closed. But if we close them at*/

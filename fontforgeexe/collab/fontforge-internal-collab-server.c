@@ -178,8 +178,10 @@ s_snapshots (zloop_t *loop, zmq_pollitem_t *poller, void *args)
         //  Request is in second frame of message
         char *request = zstr_recv (poller->socket);
         char *subtree = NULL;
-        if (streq (request, "ICANHAZ?"))
+        if (streq (request, "ICANHAZ?")) {
+            free (request);
             subtree = zstr_recv (poller->socket);
+        }
         else
             printf ("E: bad request, aborting\n");
 
@@ -198,6 +200,7 @@ s_snapshots (zloop_t *loop, zmq_pollitem_t *poller, void *args)
             kvmsg_set_body (kvmsg, (byte *) subtree, 0);
             kvmsg_send     (kvmsg, poller->socket);
             kvmsg_destroy (&kvmsg);
+            free (subtree);
         }
         zframe_destroy(&identity);
     }
@@ -358,5 +361,6 @@ int main (int argc, char** argv)
     zloop_destroy (&self->loop);
     zhash_destroy (&self->kvmap);
     zctx_destroy (&self->ctx);
+    free (self);
     return 0;
 }

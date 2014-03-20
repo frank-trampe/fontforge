@@ -60,6 +60,7 @@ static void TraceDataFree(TraceData *td) {
 
     while ( td!=NULL ) {
 	next = td->next;
+	chunkfree(td,sizeof(TraceData));
 	td = next;
 	if ( td==first )
     break;
@@ -584,6 +585,8 @@ static SplineSet *TraceCurve(CharView *cv) {
     else
 	spl->last->pointtype = pt_curve;
 
+    free(mids);
+
     si = CVFreeHandInfo();
     if ( si->stroke_type!=si_centerline ) {
 	si->factor = ( si->pressure1==si->pressure2 ) ? NULL : Trace_Factor;
@@ -613,6 +616,7 @@ return; /* Eh? No points? How did that happen? */
 	new->next = NULL;
 	cv->freehand.last->next = new;
 	cv->freehand.last = new;
+	SplinePointListsFree(cv->freehand.current_trace);
 	cv->freehand.current_trace = TraceCurve(cv);
     } else if ( cv->freehand.head == cv->freehand.last )
 return;			/* Only one point, no good way to close it */
@@ -627,6 +631,7 @@ return;			/* Only one point, no good way to close it */
     trace->first->prevcpdef = trace->last->prevcpdef;
     trace->first->prev = trace->last->prev;
     trace->first->prev->to = trace->first;
+    SplinePointFree(trace->last);
     trace->last = trace->first;
     
     if ( cv->freehand.head->wasconstrained  || cv->freehand.last->wasconstrained )
@@ -786,8 +791,10 @@ return;
 
 	if (( event->u.chr.state&ksm_meta ) || (dx+dy)*cv->scale > 4 )
 	    TraceDataClose(cv,event);
-	else
+	else {
+	    SplinePointListsFree(cv->freehand.current_trace);
 	    cv->freehand.current_trace = TraceCurve(cv);
+	}
 	if ( cv->freehand.current_trace!=NULL ) {
 	    CVPreserveState((CharViewBase *) cv);
 	    if ( cv->b.layerheads[cv->b.drawmode]->order2 )
@@ -802,11 +809,14 @@ return;
 		ss->next = cv->b.layerheads[cv->b.drawmode]->splines;
 		cv->b.layerheads[cv->b.drawmode]->splines = cv->freehand.current_trace->next;
 		cv->freehand.current_trace->next = NULL;
+		/*SplinePointListsFree(cv->freehand.current_trace);*/
 	    }
 	    cv->freehand.current_trace = NULL;
 	}
-    } else
+    } else {
+	SplinePointListsFree(cv->freehand.current_trace);
 	cv->freehand.current_trace = NULL;
+    }
     TraceDataFree(cv->freehand.head);
     cv->freehand.head = cv->freehand.last = NULL;
     CVCharChangedUpdate(&cv->b);

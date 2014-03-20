@@ -230,6 +230,8 @@ return;
 	}
 	fprintf( out,"\n" );
     }
+    free(needed);
+    free(setsneeded);
 }
 
 static void dump_fpst_everythingelse(FILE *out, SplineFont *sf,char **classes,
@@ -792,6 +794,7 @@ static void dump_contextpstcoverage(FILE *out,SplineFont *sf,
 		    if ( len!=0 )
 			start[len-1] = '\0';
 		    pst = pst_from_ligature(sf,otl,start);
+		    free( start );
 		} else
 		    pst = pst_any_from_otl(sf,otl);
 		if ( pst!=NULL )
@@ -1103,6 +1106,7 @@ static void dump_anchors(FILE *out,SplineFont *sf,struct lookup_subtable *sub) {
 	    }
 	    /* When positioning, we dump out all of a base glyph's anchors */
 	    /*  for the sub-table at once rather than class by class */
+	    free(marks);
 	}
     }
     if ( sub->lookup->lookup_type==gpos_cursive )
@@ -1648,6 +1652,7 @@ return;					/* No anchor positioning, no ligature carets */
 	}
 	fprintf( out, ";\n" );
     }
+    free( glyphs );
 
     /* no way to specify mark classes */
 
@@ -1851,10 +1856,13 @@ static void dump_gsubgpos(FILE *out, SplineFont *sf) {
 			    }
 			}
 		    }
+		    free(langs);
 		}
 		fprintf( out, "} %c%c%c%c;\n", feats[i]>>24, feats[i]>>16, feats[i]>>8, feats[i] );
 	    }
+	    free(scripts);
 	}
+	free(feats);
     }
 }
 
@@ -1930,6 +1938,7 @@ return;
 	    }
 	}
     }
+    free(names);
 }
 
 static void cleanupnames(SplineFont *sf) {
@@ -1937,8 +1946,10 @@ static void cleanupnames(SplineFont *sf) {
     OTLookup *otl;
 
     for ( isgpos=0; isgpos<2; ++isgpos )
-	for ( otl=isgpos ? sf->gpos_lookups : sf->gsub_lookups; otl!=NULL; otl=otl->next )
+	for ( otl=isgpos ? sf->gpos_lookups : sf->gsub_lookups; otl!=NULL; otl=otl->next ) {
+	    free( otl->tempname );
 	    otl->tempname = NULL;
+	}
 }
 
 void FeatDumpFontLookups(FILE *out,SplineFont *sf) {
@@ -2066,6 +2077,8 @@ static char *fea_canonicalClassOrder(char *class) {
     }
     if ( name_cnt!=0 )
 	cpt[-1] = '\0';
+    free(names);
+    free(temp);
 
 return( class );
 }
@@ -2409,6 +2422,7 @@ return;
 	LogError(_("Could not open include file (%s) on line %d of %s"),
 		filename, tok->line[tok->inc_depth], tok->filename[tok->inc_depth] );
 	++tok->err_count;
+	free(filename);
 return;
     }
 
@@ -2449,6 +2463,7 @@ return;
     if ( ch==EOF ) {
 	if ( tok->inc_depth>0 ) {
 	    fclose(tok->inlist[tok->inc_depth]);
+	    free(tok->filename[tok->inc_depth]);
 	    in = tok->inlist[--tok->inc_depth];
   goto skip_whitespace;
 	}
@@ -2773,6 +2788,9 @@ static void fea_AddClassDef(struct parseState *tok,char *classname,char *content
 	test->classname = classname;
 	test->next = tok->classes;
 	tok->classes = test;
+    } else {
+	free(classname);
+	free(test->glyphs);
     }
     test->glyphs = contents;
 }
@@ -2792,6 +2810,7 @@ static int fea_AddGlyphs(char **_glyphs, int *_max, int cnt, char *contents ) {
 	strcpy(glyphs+cnt,contents);
 	cnt += strlen(contents);
     }
+    free(contents);
     *_glyphs = glyphs;
 return( cnt );
 }
@@ -2833,6 +2852,7 @@ return( NULL );
 return( NULL );
     map = EncMap1to1(maxsf->glyphcnt);
     sc = SFMakeChar(maxsf,map,cid);
+    EncMapFree(map);
     if ( sc==NULL )
 return( NULL );
 return( copy( sc->name ));
@@ -2857,6 +2877,7 @@ return( sc );
 	sc = SFMakeChar(sf,map,enc);
 	if ( sc!=NULL ) {
 	    sc->widthset = true;
+	    free(sc->name);
 	    sc->name = copy(name);
 	}
 return( sc );
@@ -2872,6 +2893,7 @@ return( sc );
     sc = SFMakeChar(sf,map,enc);
     if ( sc!=NULL ) {
 	sc->widthset = true;
+	free(sc->name);
 	sc->name = copy(name);
 	sc->unicodeenc = UniFromName(name,ui_none,&custom);
     }
@@ -3767,6 +3789,7 @@ return( NULL );
     if ( tok->type!=tk_char || tok->tokbuf[0]!='<' ) {
 	LogError(_("Expected an anchor (after ligature) on line %d of %s"), tok->line[tok->inc_depth], tok->filename[tok->inc_depth] );
 	++tok->err_count;
+	free(cur->name_or_class); free(cur);
 return( NULL );
     }
     lc_max = 8;
@@ -3909,13 +3932,31 @@ return( head );
 
 static void fea_markedglyphsFree(struct markedglyphs *gl) {
     struct markedglyphs *next;
-    int i;
+    int i,j;
 
     while ( gl!=NULL ) {
 	next = gl->next;
+	free(gl->name_or_class);
+	free(gl->lookupname);
 	for ( i=0; i<gl->ap_cnt; ++i ) {
-	    if ( gl->anchors[i]!=NULL )	/* NULL anchors are permitted */
+	    if ( gl->anchors[i]!=NULL ) {	/* NULL anchors are permitted */
 		gl->anchors[i]->next = NULL;
+		AnchorPointsFree(gl->anchors[i]);
+	    }
+	}
+	free(gl->anchors);
+	for ( i=0; i<gl->apm_cnt; ++i )
+	    AnchorPointsFree(gl->apmark[i].ap);
+	free(gl->apmark);
+	for ( i=0; i<gl->lc_cnt; ++i ) {
+	    for ( j=0; j<gl->ligcomp[i].apm_cnt; ++j )
+		AnchorPointsFree(gl->ligcomp[i].apmark[j].ap);
+	    free( gl->ligcomp[i].apmark);
+	}
+	free(gl->ligcomp);
+	if ( gl->vr!=NULL ) {
+	    ValDevFree(gl->vr->adjust);
+	    chunkfree(gl->vr,sizeof(struct vr));
 	}
 	gl = next;
     }
@@ -4281,6 +4322,7 @@ static struct feat_item *fea_process_sub_ligature(struct parseState *tok,
 	    len += strlen(g->name_or_class)+1;
 	space = malloc(len+1);
 	sofar = fea_AddAllLigPosibilities(tok,glyphs,sc,space,space,sofar);
+	free(space);
     }
 return( sofar );
 }
@@ -5082,6 +5124,7 @@ static struct nameid *fea_ParseNameId(struct parseState *tok,int strid) {
 	    if ( pt ) {
 		*pt = '\0';
 		nm->utf8_str = copy(start);
+		free(start);
 	    } else
 		nm->utf8_str = copy("");
 	}
@@ -5164,7 +5207,9 @@ static void fea_ParseFeatureNames(struct parseState *tok,uint32 tag) {
 		string->name = temp->utf8_str;
 		string->next = head;
 		head = string;
-	    }
+		chunkfree(temp,sizeof(*temp));
+	    } else
+		NameIdFree(temp);
 	}
     }
 
@@ -5429,6 +5474,7 @@ static void fea_ParseTableKeywords(struct parseState *tok, struct tablekeywords 
 		LogError(_("Expected string on line %d of %s"),
 			tok->line[tok->inc_depth], tok->filename[tok->inc_depth] );
 		++tok->err_count;
+		chunkfree(tv,sizeof(*tv));
 		tv = NULL;
 	    }
 	    fea_ParseTok(tok);
@@ -5437,6 +5483,7 @@ static void fea_ParseTableKeywords(struct parseState *tok, struct tablekeywords 
 		LogError(_("Expected integer on line %d of %s"),
 			tok->line[tok->inc_depth], tok->filename[tok->inc_depth] );
 		++tok->err_count;
+		chunkfree(tv,sizeof(*tv));
 		tv = NULL;
 		fea_ParseTok(tok);
 	    } else {
@@ -5470,6 +5517,7 @@ static void fea_ParseTableKeywords(struct parseState *tok, struct tablekeywords 
 		    tok->line[tok->inc_depth], tok->filename[tok->inc_depth] );
 	    ++tok->err_count;
 	    fea_skip_to_close_curly(tok);
+	    chunkfree(tv,sizeof(*tv));
     break;
 	}
 	if ( tv!=NULL ) {
@@ -5596,6 +5644,7 @@ static void fea_ParseGDEFTable(struct parseState *tok) {
 	++tok->err_count;
 	fea_skip_to_close_curly(tok);
     }
+    free(carets);
 }
 
 static void fea_ParseBaseTable(struct parseState *tok) {
@@ -5711,11 +5760,13 @@ static void fea_ParseBaseTable(struct parseState *tok) {
     }
     if ( tok->err_count==0 ) {
 	if ( h.baseline_cnt!=0 ) {
-	    tok->sf->horiz_base = XZALLOC(struct Base);
+	    BaseFree(tok->sf->horiz_base);
+	    tok->sf->horiz_base = chunkalloc(sizeof(struct Base));
 	    *(tok->sf->horiz_base) = h;
 	}
 	if ( v.baseline_cnt!=0 ) {
-	    tok->sf->vert_base = XZALLOC(struct Base);
+	    BaseFree(tok->sf->vert_base);
+	    tok->sf->vert_base = chunkalloc(sizeof(struct Base));
 	    *(tok->sf->vert_base) = v;
 	}
     }
@@ -5785,6 +5836,27 @@ return;
 /* ******************************* Free feat ******************************** */
 /* ************************************************************************** */
 
+static void NameIdFree(struct nameid *nm) {
+    struct nameid *nmnext;
+
+    while ( nm!=NULL ) {
+	nmnext = nm->next;
+	free( nm->utf8_str );
+	chunkfree(nm,sizeof(*nm));
+	nm = nmnext;
+    }
+}
+
+static void TableValsFree(struct tablevalues *tb) {
+    struct tablevalues *tbnext;
+
+    while ( tb!=NULL ) {
+	tbnext = tb->next;
+	chunkfree(tb,sizeof(*tb));
+	tb = tbnext;
+    }
+}
+
 static void fea_featitemFree(struct feat_item *item) {
     struct feat_item *next;
     int i,j;
@@ -5792,14 +5864,53 @@ static void fea_featitemFree(struct feat_item *item) {
     while ( item!=NULL ) {
 	next = item->next;
 	switch ( item->type ) {
-	  case ft_lookup_end: case ft_feat_end: case ft_table:
-	  case ft_subtable: case ft_script: case ft_lang:
-	  case ft_lookupflags: case ft_feat_start: case ft_langsys:
-	  case ft_lookup_start: case ft_lookup_ref: case ft_sizeparams:
-	  case ft_names: case ft_featname: case ft_gdefclasses:
-	  case ft_lcaret: case ft_tablekeys: case ft_pst:
-	  case ft_pstclass: case ft_ap:
-	    /* Nothing to do */;
+	  case ft_lookup_end:
+	  case ft_feat_end:
+	  case ft_table:
+	  case ft_subtable:
+	  case ft_script:
+	  case ft_lang:
+	  case ft_lookupflags:
+	    /* Nothing needs freeing */;
+	  break;
+	  case ft_feat_start:
+	  case ft_langsys:
+	    ScriptLangListFree( item->u2.sl);
+	  break;
+	  case ft_lookup_start:
+	  case ft_lookup_ref:
+	    free( item->u1.lookup_name );
+	  break;
+	  case ft_sizeparams:
+	    free( item->u1.params );
+	    NameIdFree( item->u2.names );
+	  break;
+	  case ft_names:
+	    NameIdFree( item->u2.names );
+	  break;
+	  case ft_featname:
+	    OtfFeatNameListFree( item->u2.featnames );
+	  break;
+	  case ft_gdefclasses:
+	    for ( i=0; i<4; ++i )
+		free(item->u1.gdef_classes[i]);
+	    chunkfree(item->u1.gdef_classes,sizeof(char *[4]));
+	  break;
+	  case ft_lcaret:
+	    free( item->u2.lcaret );
+	  break;
+	  case ft_tablekeys:
+	    TableValsFree( item->u2.tvals );
+	  break;
+	  case ft_pst:
+	    PSTFree( item->u2.pst );
+	  break;
+	  case ft_pstclass:
+	    free( item->u1.class );
+	    PSTFree( item->u2.pst );
+	  break;
+	  case ft_ap:
+	    AnchorPointsFree( item->u2.ap );
 	  break;
 	  case ft_fpst:
 	    if ( item->u2.fpst!=NULL ) {
@@ -5820,6 +5931,7 @@ static void fea_featitemFree(struct feat_item *item) {
 	    IError("Don't know how to free a feat_item of type %d", item->type );
 	  break;
 	}
+	chunkfree(item,sizeof(*item));
 	item = next;
     }
 }
@@ -6161,6 +6273,9 @@ static void fea_ApplyLookupListMark2(struct parseState *tok,
 	    }
 	}
     }
+
+    free(classes);
+    free(acs);
 }
 
 
@@ -6194,6 +6309,8 @@ static void fea_canonicalClassSet(struct class_set *set) {
 	break;
 	if ( j>i+1 ) {
 	    int off = j-(i+1);
+	    for ( k=i+1; k<j; ++k )
+		free(set->classes[k]);
 	    for ( k=j ; k<set->cnt; ++k )
 		set->classes[k-off] = set->classes[k];
 	    set->cnt -= off;
@@ -6214,6 +6331,7 @@ static void fea_canonicalClassSet(struct class_set *set) {
     i = 0;
     while (i < set->cnt) {
         if (is_blank(set->classes[i])) {
+            free(set->classes[i]);
             for ( k=i+1 ; k < set->cnt; ++k )
                 set->classes[k-1] = set->classes[k];
             set->cnt -= 1;
@@ -6298,6 +6416,7 @@ static void SFKernClassRemoveFree(SplineFont *sf,KernClass *kc) {
 	    prev->next = kc->next;
     }
     kc->next = NULL;
+    KernClassListFree(kc);
 }
 
 static void fea_ApplyLookupListPair(struct parseState *tok,
@@ -6374,6 +6493,7 @@ static void fea_ApplyLookupListPair(struct parseState *tok,
 			kp->next = sc->kerns;
 			sc->kerns = kp;
 		    }
+		    PSTFree(pst);
 		} else {
 		    pst->subtable = sub;
 		    pst->next = sc->possub;
@@ -6424,6 +6544,10 @@ static void fea_ApplyLookupListPair(struct parseState *tok,
 	sub = NULL;
 	while ( l!=NULL && l->type==ft_subtable )
 	    l = l->lookup_next;
+    }
+    if ( kmax!=0 ) {
+	free(lefts.classes);
+	free(rights.classes);
     }
 }
 
@@ -6549,6 +6673,7 @@ static void fea_NameID2NameTable(SplineFont *sf, struct nameid *names) {
 	    cur->next = sf->names;
 	    sf->names = cur;
 	}
+	free(cur->names[names->strid]);
 	cur->names[names->strid] = names->utf8_str;
 	names->utf8_str = NULL;
 	names = names->next;
@@ -6640,6 +6765,7 @@ static void fea_GDefLigCarets(SplineFont *sf, struct feat_item *f) {
 		    else
 			prev->next = next;
 		    pst->next = NULL;
+		    PSTFree(pst);
 		}
 	    }
 	    for ( i=0; f->u2.lcaret[i]!=0; ++i );
@@ -6692,7 +6818,8 @@ static struct feat_item *fea_ApplyFeatureList(struct parseState *tok,
 	    fea_AttachFeatureToLookup(otl,feature_tag,sl);
     continue;
 	  case ft_script:
-	    sl = XZALLOC(struct scriptlanglist);
+	    ScriptLangListFree(sl);
+	    sl = chunkalloc(sizeof(struct scriptlanglist));
 	    sl->script = f->u1.tag;
 	    sl->lang_cnt = 1;
 	    sl->langs[0] = DEFAULT_LANG;
@@ -6701,7 +6828,12 @@ static struct feat_item *fea_ApplyFeatureList(struct parseState *tok,
     continue;
 	  case ft_lang:
 	    if ( !saw_script ) {
+<<<<<<< HEAD
 		sl = XZALLOC(struct scriptlanglist);
+=======
+		ScriptLangListFree(sl);
+		sl = chunkalloc(sizeof(struct scriptlanglist));
+>>>>>>> parent of e05e525... Use BDW garbage collector
 		sl->script = CHR('l','a','t','n');
 	    }
 	    sl->langs[0] = f->u1.tag;
@@ -6715,6 +6847,7 @@ static struct feat_item *fea_ApplyFeatureList(struct parseState *tok,
 	    f = f->next;
     continue;
 	  case ft_langsys:
+	    ScriptLangListFree(sl);
 	    saw_script = false;
 	    sl = f->u2.sl;
 	    f->u2.sl = NULL;
@@ -6727,6 +6860,7 @@ static struct feat_item *fea_ApplyFeatureList(struct parseState *tok,
 		tok->sf->design_range_bottom = f->u1.params[2];
 		tok->sf->design_range_top = f->u1.params[3];
 	    }
+	    OtfNameListFree(tok->sf->fontstyle_name);
 	    tok->sf->fontstyle_name = fea_NameID2OTFName(f->u2.names);
 	    f = f->next;
     continue;
@@ -6768,7 +6902,9 @@ static struct feat_item *fea_ApplyFeatureList(struct parseState *tok,
 	  case ft_featname:
 	    for ( fn = tok->sf->feat_names; fn!=NULL && fn->tag!=f->u2.featnames->tag; fn=fn->next );
 	    if ( fn!=NULL ) {
+		OtfNameListFree(fn->names);
 		fn->names = f->u2.featnames->names;
+		chunkfree(f->u2.featnames,sizeof(struct otffeatname));
 		f->u2.featnames = NULL;
 	    } else {
 		f->u2.featnames->next = tok->sf->feat_names;
@@ -6869,6 +7005,7 @@ static void fea_NameLookups(struct parseState *tok) {
 	    do {
 		sprintf(namebuf,"%s-%d", otl->lookup_name, cnt++ );
 	    } while ( SFFindLookup(sf,namebuf)!=NULL );
+	    free(otl->lookup_name);
 	    otl->lookup_name = namebuf;
 	}
 	if ( otl->lookup_type < gpos_start ) {
@@ -7012,8 +7149,29 @@ void SFApplyFeatureFile(SplineFont *sf,FILE *file,char *filename) {
     } else
 	ff_post_error("Not applied","There were errors when parsing the feature file and the features have not been applied");
     fea_featitemFree(tok.sofar);
-    for ( nap = tok.namedAnchors; nap!=NULL; nap=napnext )
+    ScriptLangListFree(tok.def_langsyses);
+    for ( gc = tok.classes; gc!=NULL; gc=gcnext ) {
+	gcnext = gc->next;
+	free(gc->classname); free(gc->glyphs);
+	chunkfree(gc,sizeof(struct glyphclasses));
+    }
+    for ( nap = tok.namedAnchors; nap!=NULL; nap=napnext ) {
 	napnext = nap->next;
+	free(nap->name); AnchorPointsFree(nap->ap);
+	chunkfree(nap,sizeof(*nap));
+    }
+    for ( nvr = tok.namedValueRs; nvr!=NULL; nvr=nvrnext ) {
+	nvrnext = nvr->next;
+	free(nvr->name); chunkfree(nvr->vr,sizeof(struct vr));
+	chunkfree(nvr,sizeof(*nvr));
+    }
+    for ( j=0; j<2; ++j ) {
+	for ( i=0; i<tok.gm_cnt[j]; ++i ) {
+	    free(tok.gdef_mark[j][i].name);
+	    free(tok.gdef_mark[j][i].glyphs);
+	}
+	free(tok.gdef_mark[j]);
+    }
 }
 
 void SFApplyFeatureFilename(SplineFont *sf,char *filename) {
